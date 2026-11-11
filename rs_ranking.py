@@ -121,6 +121,112 @@ def pct_from_52wk_high(price, high):
 
 # ── TradingView CSV ───────────────────────────────────────────────────────────
 
+
+# RS-line signals: 250 daily bars including the current session.
+# Ties count, and "before price" compares intraday highs, matching the
+# uploaded Fred6724 Pine Script. No cross-sectional RS rating is used here.
+RS_SIGNAL_COLUMNS = [
+    "RS_Blue_Dot", "RS_Before_Price", "Days_Since_Dot",
+    "Dots_Last_20_Days", "RS_Signal_Date", "RS_Benchmark",
+    "RS_Bars_Used", "RS_Signal_Status",
+]
+RS_LINE_REFERENCE_TICKER = cfg("RS_LINE_REFERENCE_TICKER") or REFERENCE_TICKER
+
+
+def rs_daily_frame(candles):
+    """Validate daily dates and preserve missing prices; never align by row."""
+    frame = pd.DataFrame(candles)
+    if frame.empty:
+        raise ValueError("NO_CANDLES")
+    date_key = next((key for key in ("datetime", "date", "timestamp", "time")
+                     if key in frame.columns), None)
+    if date_key is None:
+        raise ValueError("MISSING_CANDLE_DATES")
+    values = frame[date_key]
+    numbers = pd.to_numeric(values, errors="coerce")
+    if numbers.notna().all():
+        # Common API formats: YYYYMMDD, Unix seconds, milliseconds, microseconds.
+        magnitude = numbers.abs().median()
+        if 19000101 <= magnitude <= 21001231:
+            dates = pd.to_datetime(values.astype(str), format="%Y%m%d",
+                                   errors="coerce", utc=True)
+        else:
+            unit = "ns" if magnitude > 1e17 else (
+                "us" if magnitude > 1e14 else ("ms" if magnitude > 1e11 else "s"))
+            dates = pd.to_datetime(numbers, unit=unit, errors="coerce", utc=True)
+    else:
+        dates = pd.to_datetime(values, format="mixed", errors="coerce", utc=True)
+    if dates.isna().any():
+        raise ValueError("INVALID_CANDLE_DATES")
+    frame.index = pd.DatetimeIndex(dates).normalize()
+    if frame.index.has_duplicates:
+        raise ValueError("DUPLICATE_DAILY_CANDLES")
+    for field in ("close", "high"):
+        if field not in frame:
+            frame[field] = float("nan")
+        frame[field] = pd.to_numeric(frame[field], errors="coerce")
+        frame[field] = frame[field].where(np.isfinite(frame[field]) & (frame[field] > 0))
+    return frame.sort_index()
+
+
+def rs_line_signals(candles, benchmark, benchmark_name, lookback=250):
+    """Return current flags plus counts within the supplied daily history.
+
+    Short IPO histories use available bars, as ta.highest does in Pine.
+    Unknown signals are blank in the CSV and explained by RS_Signal_Status.
+    Days_Since_Dot and Dots_Last_20_Days refer to ANY RS-line high, not only
+    the more selective before-price signal.
+    """
+    result = dict.fromkeys(RS_SIGNAL_COLUMNS)
+    result["RS_Benchmark"] = benchmark_name
+    if benchmark is None or benchmark.empty:
+        result["RS_Signal_Status"] = "BENCHMARK_UNAVAILABLE"
+        return result
+    try:
+        stock = rs_daily_frame(candles)
+    except ValueError as exc:
+        result["RS_Signal_Status"] = str(exc)
+        return result
+    result["RS_Signal_Date"] = stock.index[-1].strftime("%Y-%m-%d")
+    result["RS_Bars_Used"] = min(lookback, len(stock))
+    if stock.index[-1] != benchmark.index[-1]:
+        result["RS_Signal_Status"] = "LATEST_DATES_DIFFER"
+        return result
+
+    # Reindex leaves unmatched benchmark sessions missing instead of silently
+    # comparing prices from different dates or filling missing sessions.
+    ref_close = benchmark["close"].reindex(stock.index)
+    line = stock["close"] / ref_close
+    window_size = pd.Series(np.minimum(np.arange(len(stock)) + 1, lookback),
+                            index=stock.index)
+    line_valid = line.rolling(lookback, min_periods=1).count().eq(window_size)
+    highs_valid = stock["high"].rolling(lookback, min_periods=1).count().eq(window_size)
+    line_max = line.rolling(lookback, min_periods=1).max()
+    price_max = stock["high"].rolling(lookback, min_periods=1).max()
+    dots = line.eq(line_max) & line_valid
+    if not bool(line_valid.iloc[-1]):
+        result["RS_Signal_Status"] = "MISSING_RS_WINDOW_DATA"
+        return result
+
+    result["RS_Blue_Dot"] = bool(dots.iloc[-1])
+    if bool(highs_valid.iloc[-1]):
+        result["RS_Before_Price"] = bool(
+            dots.iloc[-1] and stock["high"].iloc[-1] < price_max.iloc[-1])
+    found = np.flatnonzero(dots.to_numpy())
+    if len(found):
+        last_dot = int(found[-1])
+        # A missing later observation could hide a more recent dot.
+        if bool(line_valid.iloc[last_dot:].all()):
+            result["Days_Since_Dot"] = len(stock) - 1 - last_dot
+    if bool(line_valid.tail(20).all()):
+        result["Dots_Last_20_Days"] = int(dots.tail(20).sum())
+    result["RS_Signal_Status"] = (
+        "MISSING_HIGH_WINDOW_DATA" if not bool(highs_valid.iloc[-1]) else
+        ("SHORT_HISTORY" if len(stock) < lookback else "OK")
+    )
+    return result
+
+
 def generate_tradingview_csv(percentile_values, first_rs_values):
     lines = []
     trading_days = 0
@@ -147,8 +253,18 @@ def rankings():
     ind_ranks = []
     stock_rs = {}
     ref = price_data[REFERENCE_TICKER]
+    signal_reference = price_data.get(RS_LINE_REFERENCE_TICKER, {})
+    try:
+        signal_benchmark = rs_daily_frame(signal_reference.get("candles", []))
+    except ValueError as exc:
+        signal_benchmark = None
+        print(f"RS-line benchmark {RS_LINE_REFERENCE_TICKER}: {exc}")
 
     for ticker in price_data:
+        # The separate RS-line benchmark is data for the signal, not another
+        # stock in the cross-sectional percentile universe.
+        if ticker == RS_LINE_REFERENCE_TICKER and ticker != REFERENCE_TICKER:
+            continue
         if not cfg("SP500") and price_data[ticker].get("universe") == "S&P 500":
             continue
         if not cfg("SP400") and price_data[ticker].get("universe") == "S&P 400":
@@ -205,6 +321,9 @@ def rankings():
                     wk52h  = safe_info(ticker, "fiftyTwoWeekHigh")  # kept for pct calc only
                     pct52h = pct_from_52wk_high(price, wk52h)
 
+                    signals = rs_line_signals(
+                        candles, signal_benchmark, RS_LINE_REFERENCE_TICKER
+                    )
                     ranks.append(len(ranks) + 1)
                     rows.append((
                         0,                                        # Rank placeholder
@@ -214,7 +333,8 @@ def rankings():
                         rs1m, rs3m, rs6m,
                         price, mktcap, flt, short,
                         pct52h,
-                        av10, av30, av50, rev_growth
+                        av10, av30, av50, rev_growth,
+                        *(signals[column] for column in RS_SIGNAL_COLUMNS)
                     ))
                     stock_rs[ticker] = rs
 
@@ -243,7 +363,8 @@ def rankings():
         TITLE_RS, TITLE_PERCENTILE, TITLE_1M, TITLE_3M, TITLE_6M,
         TITLE_PRICE, TITLE_MKTCAP, TITLE_FLOAT, TITLE_SHORT,
         TITLE_PCT_52WH,
-        TITLE_AVGVOL10, TITLE_AVGVOL30, TITLE_AVGVOL50, TITLE_REVGROWTH
+        TITLE_AVGVOL10, TITLE_AVGVOL30, TITLE_AVGVOL50, TITLE_REVGROWTH,
+        *RS_SIGNAL_COLUMNS
     ]
     df = pd.DataFrame(rows, columns=cols)
 

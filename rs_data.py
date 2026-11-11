@@ -68,6 +68,7 @@ API_KEY = cfg("API_KEY")
 TD_API = "https://api.tdameritrade.com/v1/marketdata/%s/pricehistory"
 PRICE_DATA_FILE = os.path.join(DIR, "data", "price_history.json")
 REFERENCE_TICKER = cfg("REFERENCE_TICKER")
+RS_LINE_REFERENCE_TICKER = cfg("RS_LINE_REFERENCE_TICKER") or REFERENCE_TICKER
 DATA_SOURCE = cfg("DATA_SOURCE")
 ALL_STOCKS = cfg("USE_ALL_LISTED_STOCKS")
 TICKER_INFO_FILE = os.path.join(DIR, "data_persist", "ticker_info.json")
@@ -229,9 +230,19 @@ def get_sp_midsmall_tickers(url, universe):
 def get_resolved_securities():
     tickers = {REFERENCE_TICKER: REF_TICKER}
     if ALL_STOCKS:
-        return get_tickers_from_nasdaq(tickers)
+        tickers = get_tickers_from_nasdaq(tickers)
     else:
-        return get_tickers_from_wikipedia(tickers)
+        tickers = get_tickers_from_wikipedia(tickers)
+    # Download a separate benchmark for the RS line without changing the
+    # weighted RS ranking's reference instrument (SPY by default).
+    if RS_LINE_REFERENCE_TICKER != REFERENCE_TICKER:
+        tickers[RS_LINE_REFERENCE_TICKER] = {
+            "ticker": RS_LINE_REFERENCE_TICKER,
+            "sector": "--- RS Line Benchmark ---",
+            "industry": "--- RS Line Benchmark ---",
+            "universe": "--- RS Line Benchmark ---",
+        }
+    return tickers
 
 def get_tickers_from_wikipedia(tickers):
     """

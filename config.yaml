@@ -8,6 +8,10 @@ API_KEY: Your_API_Key
 # Which Ticker should be the reference for performance?
 REFERENCE_TICKER: SPY
 
+# Separate S&P 500 index benchmark for the daily RS-line blue-dot signal.
+# The downloader includes this ticker automatically. Rankings still use SPY.
+RS_LINE_REFERENCE_TICKER: "^GSPC"
+
 # What is the lowest Percentile you want to see?
 MIN_PERCENTILE: 0
 
