@@ -1,0 +1,13 @@
+name: Actions Check
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that Actions starts
+        run: echo "GitHub Actions started successfully"
