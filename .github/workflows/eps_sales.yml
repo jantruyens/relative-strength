@@ -1,0 +1,55 @@
+name: Update EPS and Sales
+
+on:
+  schedule:
+    - cron: '45 0 * * 2-6'
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: 'Maximum stocks to refresh this run (default 500)'
+        default: '500'
+        type: string
+
+permissions:
+  contents: write
+
+# Share the existing RS workflow's group so both publishers cannot overwrite
+# one another from stale checkouts. Checkout happens after this lock is held.
+concurrency:
+  group: rs-blue-dot-publishing
+  cancel-in-progress: false
+
+jobs:
+  fundamentals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install existing project dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test financial calculations and cache handling
+        run: python -m unittest discover -s tests -p test_eps_sales.py -v
+      - name: Refresh quarterly statements and build combined CSV
+        env:
+          MAX_SYMBOLS: ${{ inputs.max_symbols || '500' }}
+        run: python eps_sales.py --max-symbols "$MAX_SYMBOLS" --budget-minutes 25
+      - name: Publish financial CSV and cache to this repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f -- output/rs_signals_fundamentals*.csv
+          git add -- data_persist/fundamentals_cache.json
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+          else
+            git commit -m "Update five-quarter EPS and sales history"
+            git push
+          fi
