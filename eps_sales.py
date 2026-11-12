@@ -29,6 +29,45 @@ SIGNAL_COLUMNS = ["RS_Before_Price_Daily", "RS_Before_Price_Weekly",
                   "RS_New_High_Daily", "RS_New_High_Weekly"]
 
 
+HISTORY_COLUMNS = ['Historical_RS_New_High_Daily', 'Historical_RS_Before_Price_Daily', 'Historical_RS_New_High_Weekly', 'Historical_RS_Before_Price_Weekly', 'Last_RS_New_High_Daily_Date', 'Last_RS_Before_Price_Daily_Date', 'Last_RS_New_High_Weekly_Date', 'Last_RS_Before_Price_Weekly_Date', 'Trading_Days_Since_RS_New_High', 'Trading_Days_Since_RS_Before_Price', 'Weekly_Bars_Since_RS_New_High', 'Weekly_Bars_Since_RS_Before_Price', 'Historical_Daily_Status', 'Historical_Weekly_Status', 'Historical_Daily_Bars_Checked', 'Historical_Weekly_Bars_Checked']
+
+
+def attach_history(stocks, history):
+    """Append 16 keyed historical fields without moving the first 50 columns.
+
+    A sidecar from a different RS snapshot must not silently be joined to the
+    current prices. An absent sidecar is supported during installation.
+    """
+    if set(stocks.columns).intersection(HISTORY_COLUMNS):
+        raise ValueError("Historical columns are already attached.")
+    output = stocks.copy()
+    for column in HISTORY_COLUMNS:
+        output[column] = None
+    if history is None:
+        output["Historical_Daily_Status"] = "HISTORY_NOT_AVAILABLE"
+        output["Historical_Weekly_Status"] = "HISTORY_NOT_AVAILABLE"
+        return output
+    required = {"Ticker", "History_As_Of", *HISTORY_COLUMNS}
+    if not required.issubset(history.columns) or history["Ticker"].isna().any() or history["Ticker"].duplicated().any():
+        raise ValueError("Historical sidecar schema/ticker keys are invalid.")
+    matched = history.set_index("Ticker").reindex(stocks["Ticker"])
+    for column in HISTORY_COLUMNS:
+        output[column] = matched[column].to_numpy()
+    current_dates = pd.to_datetime(stocks["Daily_Signal_Date"], errors="coerce", utc=True)
+    sidecar_dates = pd.to_datetime(matched["History_As_Of"].to_numpy(), errors="coerce", utc=True)
+    sidecar_dates = pd.Series(sidecar_dates, index=stocks.index)
+    missing = ~stocks["Ticker"].isin(history["Ticker"])
+    unavailable = current_dates.isna() | sidecar_dates.isna()
+    stale = current_dates.ne(sidecar_dates) & ~unavailable
+    for mask, reason in ((unavailable, "SNAPSHOT_DATE_UNAVAILABLE"),
+                         (stale, "STALE_HISTORY_SNAPSHOT"),
+                         (missing, "HISTORY_NOT_AVAILABLE")):
+        output.loc[mask, HISTORY_COLUMNS] = None
+        output.loc[mask, "Historical_Daily_Status"] = reason
+        output.loc[mask, "Historical_Weekly_Status"] = reason
+    return output
+
+
 def utc_now():
     return datetime.now(timezone.utc)
 
@@ -280,11 +319,15 @@ def write_exports(frame, directory):
         # so their column-name strings cannot interfere with Sheets QUERY's
         # numeric type inference for sparsely populated EPS/sales columns.
         include_header = index <= 1
-        if data.empty and not include_header:
+        if not include_header:
             blank = dict.fromkeys(frame.columns)
             blank["Rank"] = 0
             blank["Financials_Period_Status"] = "EMPTY_PART"
-            data = pd.DataFrame([blank], columns=frame.columns)
+            if frame.columns[-1] == "Historical_Weekly_Bars_Checked":
+                blank[frame.columns[-1]] = 0  # Retain all 66 columns, with a numeric sentinel.
+            # A footer also retains width when all history values are blank.
+            # The existing import formula removes rows with no Ticker.
+            data = pd.concat([data, pd.DataFrame([blank], columns=frame.columns)], ignore_index=True)
         data.to_csv(temporary, index=False, encoding="utf-8", header=include_header)
         temporary.replace(destination)
 
@@ -332,6 +375,7 @@ def main():
     if args.max_symbols < 1 or args.budget_minutes <= 0:
         parser.error("Refresh cap and time budget must be positive.")
     input_file = ROOT / "output/rs_signals.csv"
+    # NA is a valid listed symbol. Only empty CSV fields mean missing here.
     stocks = pd.read_csv(input_file, keep_default_na=False, na_values=[""])
     if stocks.empty or not set(SIGNAL_COLUMNS).issubset(stocks.columns):
         raise ValueError("Run the four-RS-signal generator first.")
@@ -339,6 +383,9 @@ def main():
     cache = load_cache(cache_path)
     run_refresh(stocks, cache, cache_path, args.max_symbols, args.budget_minutes * 60)
     enriched = append_financials(stocks, cache)
+    history_path = ROOT / "output/rs_signals_history.csv"
+    history = pd.read_csv(history_path, keep_default_na=False, na_values=[""]) if history_path.exists() else None
+    enriched = attach_history(enriched, history)
     value_columns = [f"{field}_Q{n}" for n in range(5)
                      for field in ("EPS_Diluted", "Sales_Millions")]
     known = enriched[value_columns].notna().any(axis=1).sum()

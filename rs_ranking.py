@@ -169,7 +169,59 @@ def rs_daily_frame(candles):
     return frame.sort_index()
 
 
-def rs_frame_signals(stock, benchmark, benchmark_name, lookback=250):
+RS_HISTORY_COLUMNS = ['Historical_RS_New_High_Daily', 'Historical_RS_Before_Price_Daily', 'Historical_RS_New_High_Weekly', 'Historical_RS_Before_Price_Weekly', 'Last_RS_New_High_Daily_Date', 'Last_RS_Before_Price_Daily_Date', 'Last_RS_New_High_Weekly_Date', 'Last_RS_Before_Price_Weekly_Date', 'Trading_Days_Since_RS_New_High', 'Trading_Days_Since_RS_Before_Price', 'Weekly_Bars_Since_RS_New_High', 'Weekly_Bars_Since_RS_Before_Price', 'Historical_Daily_Status', 'Historical_Weekly_Status', 'Historical_Daily_Bars_Checked', 'Historical_Weekly_Bars_Checked']
+RS_HISTORY_CORE_COLUMNS = ['RS_History_New_High', 'RS_History_Before_Price', 'RS_Last_New_High_Date', 'RS_Last_Before_Price_Date', 'RS_Bars_Since_New_High', 'RS_Bars_Since_Before_Price', 'RS_History_Status', 'RS_History_Window_Bars']
+
+
+def rs_history_summary(stock, dots, valid, before, before_valid, lookback, recent):
+    """Existence in recent bars; exact last date/age only if later bars are known.
+
+    Windows include the latest bar. Weekly dates use the bar's actual last
+    session. No fixed present-day maximum is applied to earlier observations.
+    """
+    result = dict.fromkeys(RS_HISTORY_CORE_COLUMNS)
+    result["RS_History_Window_Bars"] = min(recent, len(stock))
+    issues = []
+    if len(stock) < lookback + recent - 1:
+        issues.append("RECENT_WINDOW_SHORT_HISTORY")
+    dates = stock["last_session"] if "last_session" in stock else pd.Series(stock.index, index=stock.index)
+    for prefix, events, known, date_key, age_key in (
+        ("RS", dots, valid, "RS_Last_New_High_Date", "RS_Bars_Since_New_High"),
+        ("BEFORE_PRICE", before, before_valid, "RS_Last_Before_Price_Date", "RS_Bars_Since_Before_Price"),
+    ):
+        flag_key = "RS_History_New_High" if prefix == "RS" else "RS_History_Before_Price"
+        recent_events, recent_known = events.tail(recent), known.tail(recent)
+        result[flag_key] = True if bool(recent_events.any()) else (
+            False if bool(recent_known.all()) else None)
+        if not bool(recent_known.all()):
+            issues.append(prefix + "_WINDOW_HAS_GAPS")
+        observed = np.flatnonzero(events.to_numpy())
+        if len(observed):
+            last = int(observed[-1])
+            if bool(known.iloc[last:].all()):
+                result[date_key] = dates.iloc[last].strftime("%Y-%m-%d")
+                result[age_key] = len(stock) - 1 - last
+                if last + 1 < lookback:
+                    issues.append(prefix + "_LAST_EVENT_SHORT_LOOKBACK")
+            else:
+                issues.append(prefix + "_LAST_EVENT_UNCERTAIN")
+    result["RS_History_Status"] = ";".join(issues) if issues else "OK"
+    return result
+
+
+def rs_history_view(stocks, snapshots):
+    """Keyed sidecar preserves the existing 24-column RS CSV schema."""
+    records = []
+    for ticker in stocks["Ticker"]:
+        signal = snapshots[ticker]
+        row = {"Ticker": ticker, "History_As_Of": signal.get("RS_Signal_Date")}
+        row.update({column: signal.get(column) for column in RS_HISTORY_COLUMNS})
+        for column in RS_HISTORY_COLUMNS[:4]:
+            row[column] = "🔵" if row[column] is True else ""
+        records.append(row)
+    return pd.DataFrame(records, columns=["Ticker", "History_As_Of", *RS_HISTORY_COLUMNS])
+
+def rs_frame_signals(stock, benchmark, benchmark_name, lookback=250, recent=20):
     """Return current flags plus counts within the supplied daily history.
 
     Short IPO histories use available bars, as ta.highest does in Pine.
@@ -177,15 +229,17 @@ def rs_frame_signals(stock, benchmark, benchmark_name, lookback=250):
     Days_Since_Dot and Dots_Last_20_Days refer to ANY RS-line high, not only
     the more selective before-price signal.
     """
-    result = dict.fromkeys(RS_SIGNAL_COLUMNS)
+    result = dict.fromkeys(RS_SIGNAL_COLUMNS + RS_HISTORY_CORE_COLUMNS)
     result["RS_Benchmark"] = benchmark_name
     if benchmark is None or benchmark.empty:
         result["RS_Signal_Status"] = "BENCHMARK_UNAVAILABLE"
+        result["RS_History_Status"] = "BENCHMARK_UNAVAILABLE"
         return result
     result["RS_Signal_Date"] = stock.index[-1].strftime("%Y-%m-%d")
     result["RS_Bars_Used"] = min(lookback, len(stock))
     if stock.index[-1] != benchmark.index[-1]:
         result["RS_Signal_Status"] = "LATEST_DATES_DIFFER"
+        result["RS_History_Status"] = "LATEST_DATES_DIFFER"
         return result
 
     # Reindex leaves unmatched benchmark sessions missing instead of silently
@@ -195,6 +249,7 @@ def rs_frame_signals(stock, benchmark, benchmark_name, lookback=250):
         ref_sessions = benchmark["last_session"].reindex(stock.index)
         if stock["last_session"].iloc[-1] != ref_sessions.iloc[-1]:
             result["RS_Signal_Status"] = "LATEST_DATES_DIFFER"
+            result["RS_History_Status"] = "LATEST_DATES_DIFFER"
             return result
         # Do not pair a Thursday stock close with a Friday benchmark close
         # merely because both belong to the same calendar week.
@@ -208,6 +263,12 @@ def rs_frame_signals(stock, benchmark, benchmark_name, lookback=250):
     line_max = line.rolling(lookback, min_periods=1).max()
     price_max = stock["high"].rolling(lookback, min_periods=1).max()
     dots = line.eq(line_max) & line_valid
+    before = dots & stock["high"].lt(price_max) & highs_valid
+    # If RS is known NOT to be at a high, before-price is false even when
+    # high data is missing. Unknown RS or a dot with unknown highs is unknown.
+    before_valid = line_valid & (~dots | highs_valid)
+    result.update(rs_history_summary(stock, dots, line_valid, before, before_valid,
+                                     lookback, recent))
     if not bool(line_valid.iloc[-1]):
         result["RS_Signal_Status"] = "MISSING_RS_WINDOW_DATA"
         return result
@@ -277,16 +338,18 @@ def rs_line_signals(candles, benchmark, benchmark_name, lookback=250, weekly_ben
     try:
         stock = rs_daily_frame(candles)
     except ValueError as exc:
-        result = dict.fromkeys(RS_SIGNAL_COLUMNS + RS_WEEKLY_COLUMNS)
+        result = dict.fromkeys(RS_SIGNAL_COLUMNS + RS_WEEKLY_COLUMNS + RS_HISTORY_COLUMNS)
         result["RS_Benchmark"] = benchmark_name
         result["RS_Signal_Status"] = str(exc)
         result["RS_Weekly_Signal_Status"] = str(exc)
+        result["Historical_Daily_Status"] = str(exc)
+        result["Historical_Weekly_Status"] = str(exc)
         return result
     result = rs_frame_signals(stock, benchmark, benchmark_name, lookback)
     stock_weekly = rs_weekly_frame(stock)
     if weekly_benchmark is None and benchmark is not None and not benchmark.empty:
         weekly_benchmark = rs_weekly_frame(benchmark)
-    weekly = rs_frame_signals(stock_weekly, weekly_benchmark, benchmark_name, 52)
+    weekly = rs_frame_signals(stock_weekly, weekly_benchmark, benchmark_name, 52, recent=8)
     result.update({
         "RS_New_High_Weekly": weekly["RS_Blue_Dot"],
         "RS_Before_Price_Weekly": weekly["RS_Before_Price"],
@@ -294,6 +357,24 @@ def rs_line_signals(candles, benchmark, benchmark_name, lookback=250, weekly_ben
         "RS_Weekly_Week_Start": (stock_weekly.index[-1] - pd.Timedelta(days=4)).strftime("%Y-%m-%d"),
         "RS_Weekly_Bars_Used": weekly["RS_Bars_Used"],
         "RS_Weekly_Signal_Status": weekly["RS_Signal_Status"],
+    })
+    result.update({
+        "Historical_RS_New_High_Daily": result["RS_History_New_High"],
+        "Historical_RS_Before_Price_Daily": result["RS_History_Before_Price"],
+        "Historical_RS_New_High_Weekly": weekly["RS_History_New_High"],
+        "Historical_RS_Before_Price_Weekly": weekly["RS_History_Before_Price"],
+        "Last_RS_New_High_Daily_Date": result["RS_Last_New_High_Date"],
+        "Last_RS_Before_Price_Daily_Date": result["RS_Last_Before_Price_Date"],
+        "Last_RS_New_High_Weekly_Date": weekly["RS_Last_New_High_Date"],
+        "Last_RS_Before_Price_Weekly_Date": weekly["RS_Last_Before_Price_Date"],
+        "Trading_Days_Since_RS_New_High": result["RS_Bars_Since_New_High"],
+        "Trading_Days_Since_RS_Before_Price": result["RS_Bars_Since_Before_Price"],
+        "Weekly_Bars_Since_RS_New_High": weekly["RS_Bars_Since_New_High"],
+        "Weekly_Bars_Since_RS_Before_Price": weekly["RS_Bars_Since_Before_Price"],
+        "Historical_Daily_Status": result["RS_History_Status"],
+        "Historical_Weekly_Status": weekly["RS_History_Status"],
+        "Historical_Daily_Bars_Checked": result["RS_History_Window_Bars"],
+        "Historical_Weekly_Bars_Checked": weekly["RS_History_Window_Bars"],
     })
     return result
 
@@ -521,6 +602,9 @@ def rankings():
     # Separate export: do not expand the existing 27-column import in Sheets.
     rs_signals_view(df, signal_snapshots).to_csv(
         os.path.join(DIR, "output", "rs_signals.csv"), index=False, encoding="utf-8"
+    )
+    rs_history_view(df, signal_snapshots).to_csv(
+        os.path.join(DIR, "output", "rs_signals_history.csv"), index=False, encoding="utf-8"
     )
 
     print(f"✓ rs_stocks_1.csv: {len(df_top)} tickers (Percentile 50-99)")
