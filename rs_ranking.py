@@ -169,7 +169,7 @@ def rs_daily_frame(candles):
     return frame.sort_index()
 
 
-def rs_line_signals(candles, benchmark, benchmark_name, lookback=250):
+def rs_frame_signals(stock, benchmark, benchmark_name, lookback=250):
     """Return current flags plus counts within the supplied daily history.
 
     Short IPO histories use available bars, as ta.highest does in Pine.
@@ -182,11 +182,6 @@ def rs_line_signals(candles, benchmark, benchmark_name, lookback=250):
     if benchmark is None or benchmark.empty:
         result["RS_Signal_Status"] = "BENCHMARK_UNAVAILABLE"
         return result
-    try:
-        stock = rs_daily_frame(candles)
-    except ValueError as exc:
-        result["RS_Signal_Status"] = str(exc)
-        return result
     result["RS_Signal_Date"] = stock.index[-1].strftime("%Y-%m-%d")
     result["RS_Bars_Used"] = min(lookback, len(stock))
     if stock.index[-1] != benchmark.index[-1]:
@@ -196,6 +191,15 @@ def rs_line_signals(candles, benchmark, benchmark_name, lookback=250):
     # Reindex leaves unmatched benchmark sessions missing instead of silently
     # comparing prices from different dates or filling missing sessions.
     ref_close = benchmark["close"].reindex(stock.index)
+    if "last_session" in stock.columns:
+        ref_sessions = benchmark["last_session"].reindex(stock.index)
+        if stock["last_session"].iloc[-1] != ref_sessions.iloc[-1]:
+            result["RS_Signal_Status"] = "LATEST_DATES_DIFFER"
+            return result
+        # Do not pair a Thursday stock close with a Friday benchmark close
+        # merely because both belong to the same calendar week.
+        ref_close = ref_close.where(stock["last_session"].eq(ref_sessions))
+        result["RS_Signal_Date"] = stock["last_session"].iloc[-1].strftime("%Y-%m-%d")
     line = stock["close"] / ref_close
     window_size = pd.Series(np.minimum(np.arange(len(stock)) + 1, lookback),
                             index=stock.index)
@@ -227,6 +231,100 @@ def rs_line_signals(candles, benchmark, benchmark_name, lookback=250):
     return result
 
 
+
+RS_WEEKLY_COLUMNS = [
+    "RS_New_High_Weekly", "RS_Before_Price_Weekly", "RS_Weekly_Signal_Date",
+    "RS_Weekly_Week_Start", "RS_Weekly_Bars_Used", "RS_Weekly_Signal_Status",
+]
+RS_VIEW_COLUMNS = [
+    "Rank", "Ticker", "Price", "Percentile",
+    "RS_Before_Price_Daily", "RS_Before_Price_Weekly",
+    "RS_New_High_Daily", "RS_New_High_Weekly", "Sector", "Industry",
+    "Exchange", "PctFrom52WkHigh", "MarketCap", "AvgVol50", "RS_Benchmark",
+    "Daily_Signal_Date", "Daily_Bars_Used", "Daily_Status",
+    "Weekly_Signal_Date", "Weekly_Week_Start", "Weekly_Bars_Used",
+    "Weekly_Status", "Days_Since_Dot", "Dots_Last_20_Days",
+]
+
+
+def rs_weekly_frame(daily):
+    """Build calendar-week candles, including the current week-to-date.
+
+    Weekly close is the LAST session's close, never a previous valid close.
+    Weekly high is the maximum daily high, unknown if a daily high is missing.
+    last_session makes stock/benchmark weekly closes date-comparable.
+    """
+    sessions = pd.Series(daily.index, index=daily.index)
+    last_sessions = sessions.resample("W-FRI", closed="right", label="right").last().dropna()
+    weekly = pd.DataFrame(index=last_sessions.index)
+    weekly["last_session"] = last_sessions
+    last_dates = pd.DatetimeIndex(last_sessions.array)
+    weekly["close"] = daily["close"].reindex(last_dates).to_numpy()
+    groups = daily["high"].resample("W-FRI", closed="right", label="right")
+    highs = groups.max()
+    all_highs_known = groups.count().eq(groups.size())
+    weekly["high"] = highs.where(all_highs_known).reindex(weekly.index)
+    return weekly
+
+
+def rs_line_signals(candles, benchmark, benchmark_name, lookback=250, weekly_benchmark=None):
+    """Daily 250-bar and weekly 52-bar signals from the same dated candles.
+
+    Weekly flags use this week's latest daily close and week-to-date high;
+    they are provisional before the weekly candle closes. The old daily
+    CSV schema is preserved; the combined four-dot view has its own CSV.
+    """
+    try:
+        stock = rs_daily_frame(candles)
+    except ValueError as exc:
+        result = dict.fromkeys(RS_SIGNAL_COLUMNS + RS_WEEKLY_COLUMNS)
+        result["RS_Benchmark"] = benchmark_name
+        result["RS_Signal_Status"] = str(exc)
+        result["RS_Weekly_Signal_Status"] = str(exc)
+        return result
+    result = rs_frame_signals(stock, benchmark, benchmark_name, lookback)
+    stock_weekly = rs_weekly_frame(stock)
+    if weekly_benchmark is None and benchmark is not None and not benchmark.empty:
+        weekly_benchmark = rs_weekly_frame(benchmark)
+    weekly = rs_frame_signals(stock_weekly, weekly_benchmark, benchmark_name, 52)
+    result.update({
+        "RS_New_High_Weekly": weekly["RS_Blue_Dot"],
+        "RS_Before_Price_Weekly": weekly["RS_Before_Price"],
+        "RS_Weekly_Signal_Date": weekly["RS_Signal_Date"],
+        "RS_Weekly_Week_Start": (stock_weekly.index[-1] - pd.Timedelta(days=4)).strftime("%Y-%m-%d"),
+        "RS_Weekly_Bars_Used": weekly["RS_Bars_Used"],
+        "RS_Weekly_Signal_Status": weekly["RS_Signal_Status"],
+    })
+    return result
+
+
+def rs_signals_view(stocks, snapshots):
+    """An independent export with four visible dot columns and diagnostics."""
+    def dot(value):
+        return "🔵" if value is not None and not pd.isna(value) and bool(value) else ""
+
+    records = []
+    for _, stock in stocks.iterrows():
+        signal = snapshots[stock["Ticker"]]
+        record = {column: stock.get(column) for column in RS_VIEW_COLUMNS}
+        record["Exchange"] = stock.get("Exchange", stock.get("Universe"))
+        record.update({
+            "RS_Before_Price_Daily": dot(signal["RS_Before_Price"]),
+            "RS_Before_Price_Weekly": dot(signal["RS_Before_Price_Weekly"]),
+            "RS_New_High_Daily": dot(signal["RS_Blue_Dot"]),
+            "RS_New_High_Weekly": dot(signal["RS_New_High_Weekly"]),
+            "Daily_Signal_Date": signal["RS_Signal_Date"],
+            "Daily_Bars_Used": signal["RS_Bars_Used"],
+            "Daily_Status": signal["RS_Signal_Status"],
+            "Weekly_Signal_Date": signal["RS_Weekly_Signal_Date"],
+            "Weekly_Week_Start": signal["RS_Weekly_Week_Start"],
+            "Weekly_Bars_Used": signal["RS_Weekly_Bars_Used"],
+            "Weekly_Status": signal["RS_Weekly_Signal_Status"],
+        })
+        records.append(record)
+    return pd.DataFrame(records, columns=RS_VIEW_COLUMNS)
+
+
 def generate_tradingview_csv(percentile_values, first_rs_values):
     lines = []
     trading_days = 0
@@ -253,12 +351,17 @@ def rankings():
     ind_ranks = []
     stock_rs = {}
     ref = price_data[REFERENCE_TICKER]
+    signal_snapshots = {}
     signal_reference = price_data.get(RS_LINE_REFERENCE_TICKER, {})
     try:
         signal_benchmark = rs_daily_frame(signal_reference.get("candles", []))
     except ValueError as exc:
         signal_benchmark = None
         print(f"RS-line benchmark {RS_LINE_REFERENCE_TICKER}: {exc}")
+
+    signal_benchmark_weekly = (
+        rs_weekly_frame(signal_benchmark) if signal_benchmark is not None else None
+    )
 
     for ticker in price_data:
         # The separate RS-line benchmark is data for the signal, not another
@@ -322,8 +425,10 @@ def rankings():
                     pct52h = pct_from_52wk_high(price, wk52h)
 
                     signals = rs_line_signals(
-                        candles, signal_benchmark, RS_LINE_REFERENCE_TICKER
+                        candles, signal_benchmark, RS_LINE_REFERENCE_TICKER,
+                        weekly_benchmark=signal_benchmark_weekly
                     )
+                    signal_snapshots[ticker] = signals
                     ranks.append(len(ranks) + 1)
                     rows.append((
                         0,                                        # Rank placeholder
@@ -413,6 +518,10 @@ def rankings():
 
     # Full file kept for programmatic use (not rendered by GitHub but downloadable)
     df.to_csv(os.path.join(DIR, "output", "rs_stocks.csv"), index=False)
+    # Separate export: do not expand the existing 27-column import in Sheets.
+    rs_signals_view(df, signal_snapshots).to_csv(
+        os.path.join(DIR, "output", "rs_signals.csv"), index=False, encoding="utf-8"
+    )
 
     print(f"✓ rs_stocks_1.csv: {len(df_top)} tickers (Percentile 50-99)")
     print(f"✓ rs_stocks_2.csv: {len(df_bot)} tickers (Percentile 0-49)")
