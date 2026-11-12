@@ -332,7 +332,7 @@ def main():
     if args.max_symbols < 1 or args.budget_minutes <= 0:
         parser.error("Refresh cap and time budget must be positive.")
     input_file = ROOT / "output/rs_signals.csv"
-    stocks = pd.read_csv(input_file)
+    stocks = pd.read_csv(input_file, keep_default_na=False, na_values=[""])
     if stocks.empty or not set(SIGNAL_COLUMNS).issubset(stocks.columns):
         raise ValueError("Run the four-RS-signal generator first.")
     cache_path = ROOT / "data_persist/fundamentals_cache.json"
