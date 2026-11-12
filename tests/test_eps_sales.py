@@ -1,10 +1,12 @@
 """Offline financial-data tests; no Yahoo network calls or rs_data imports."""
 from datetime import date, datetime, timedelta, timezone
 import importlib.util
+import ast
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -35,6 +37,25 @@ def stock_frame(count=10):
 
 
 class FundamentalsTests(unittest.TestCase):
+    def test_main_preserves_literal_na_ticker_in_source_csv(self):
+        # NA is a real ticker, not an empty value. Exercise the actual main
+        # CSV loader so this regression cannot hide behind a mocked loader.
+        stocks = stock_frame(1)
+        stocks['Ticker'] = ['NA']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'output').mkdir()
+            stocks.to_csv(root/'output/rs_signals.csv', index=False)
+            fund.save_cache({'version':1, 'tickers':{'NA':entry()}},
+                            root/'data_persist/fundamentals_cache.json')
+            with patch.object(fund, 'ROOT', root), patch.object(fund, 'utc_now', return_value=NOW), \
+                 patch.object(fund, 'select_refresh', return_value=[]), \
+                 patch('sys.argv', ['eps_sales.py', '--max-symbols', '1']):
+                fund.main()
+            output = pd.read_csv(root/'output/rs_signals_fundamentals.csv', keep_default_na=False)
+            self.assertEqual(output.loc[0, 'Ticker'], 'NA')
+            self.assertEqual(output.loc[0, 'EPS_Diluted_Q0'], 1.5)
+
     def test_exact_diluted_eps_and_revenue_with_sorted_dates(self):
         periods = fund.normalize_statement(statement(), NOW.date())
         self.assertEqual(len(periods), 5)
@@ -254,6 +275,79 @@ class FundamentalsTests(unittest.TestCase):
             joined = pd.concat([p.loc[p['Ticker'].notna()] for p in parts], ignore_index=True)
             pd.testing.assert_frame_equal(reloaded, joined, check_dtype=False)
             self.assertTrue(all(p.columns.tolist() == reloaded.columns.tolist() for p in parts))
+
+
+class HistoryAttachmentTests(unittest.TestCase):
+    def fixtures(self):
+        stocks = stock_frame(2)
+        stocks['Ticker'] = ['NA','OTHER']
+        stocks['Daily_Signal_Date'] = ['2026-11-11','2026-11-11']
+        # Production ordering is established in the existing 50-column test;
+        # here preserve arbitrary original indexes and every original value.
+        stocks.index = [8,9]
+        data = []
+        for symbol in ['OTHER','NA']:
+            row = dict.fromkeys(fund.HISTORY_COLUMNS)
+            row.update(Ticker=symbol, History_As_Of='2026-11-11',
+                       Historical_RS_New_High_Daily='🔵',
+                       Historical_Daily_Status='OK',Historical_Weekly_Status='OK',
+                       Trading_Days_Since_RS_New_High=2,
+                       Historical_Daily_Bars_Checked=20,Historical_Weekly_Bars_Checked=8)
+            data.append(row)
+        return stocks, pd.DataFrame(data)
+
+    def test_keyed_attachment_preserves_rows_columns_and_na_symbol(self):
+        stocks, history = self.fixtures()
+        history.loc[history['Ticker'].eq('NA'),'Trading_Days_Since_RS_New_High'] = 1
+        result = fund.attach_history(stocks,history)
+        pd.testing.assert_frame_equal(stocks,result[stocks.columns])
+        self.assertEqual(result.loc[8,'Trading_Days_Since_RS_New_High'],1)
+        self.assertEqual(result.loc[9,'Trading_Days_Since_RS_New_High'],2)
+        self.assertEqual(result.columns[-16:].tolist(),fund.HISTORY_COLUMNS)
+
+    def test_stale_or_missing_sidecar_cannot_show_plausible_dots(self):
+        stocks, history = self.fixtures()
+        history.loc[history['Ticker'].eq('NA'),'History_As_Of'] = '2026-11-10'
+        result = fund.attach_history(stocks,history)
+        self.assertTrue(pd.isna(result.loc[8,'Historical_RS_New_High_Daily']))
+        self.assertEqual(result.loc[8,'Historical_Daily_Status'],'STALE_HISTORY_SNAPSHOT')
+        history = history[history['Ticker'].eq('NA')]
+        result = fund.attach_history(stocks,history)
+        self.assertEqual(result.loc[9,'Historical_Daily_Status'],'HISTORY_NOT_AVAILABLE')
+        result = fund.attach_history(stocks,None)
+        self.assertTrue(result['Historical_Daily_Status'].eq('HISTORY_NOT_AVAILABLE').all())
+
+    def test_duplicate_keys_and_missing_schema_are_rejected(self):
+        stocks, history = self.fixtures()
+        with self.assertRaises(ValueError):
+            fund.attach_history(stocks,pd.concat([history,history.iloc[[0]]]))
+        with self.assertRaises(ValueError):
+            fund.attach_history(stocks,history[['Ticker','History_As_Of']])
+
+    def test_66_column_export_preserves_financial_positions_and_partition_roundtrip(self):
+        source = ast.parse((ROOT/'rs_ranking.py').read_text(encoding='utf-8'))
+        assignment = next(node for node in source.body if isinstance(node,ast.Assign)
+                          and any(isinstance(t,ast.Name) and t.id=='RS_VIEW_COLUMNS' for t in node.targets))
+        original_columns = ast.literal_eval(assignment.value)
+        stocks, history = self.fixtures()
+        stocks = stocks.reindex(columns=original_columns)
+        original = fund.append_financials(stocks, {'tickers':{'NA':entry(),'OTHER':entry()}}, NOW.date())
+        combined = fund.attach_history(original,history)
+        pd.testing.assert_frame_equal(original,combined.iloc[:,:50])
+        self.assertEqual(combined.shape,(2,66))
+        self.assertEqual(combined.columns[50],'Historical_RS_New_High_Daily')
+        self.assertEqual(combined.columns[58],'Trading_Days_Since_RS_New_High')
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            fund.write_exports(combined,directory)
+            read = lambda path, **kw: pd.read_csv(path,keep_default_na=False,na_values=[''],**kw)
+            full = read(directory/'rs_signals_fundamentals.csv')
+            parts = [read(directory/'rs_signals_fundamentals_1.csv')]
+            parts.extend(read(directory/f'rs_signals_fundamentals_{i}.csv',header=None,names=full.columns)
+                         for i in range(2,7))
+            joined = pd.concat([p[p['Ticker'].notna()] for p in parts],ignore_index=True)
+            pd.testing.assert_frame_equal(full,joined,check_dtype=False)
+            self.assertEqual(joined.iloc[0]['Ticker'],'NA')
 
 
 if __name__ == '__main__':

@@ -16,9 +16,9 @@ UPDATED = ROOT / 'rs_ranking.py'
 tree = ast.parse(UPDATED.read_text(encoding='utf-8'))
 parts = [node for node in tree.body if (
     isinstance(node, ast.FunctionDef) and node.name in (
-        'rs_daily_frame', 'rs_line_signals', 'rs_frame_signals', 'rs_weekly_frame', 'rs_signals_view')) or (
+        'rs_daily_frame', 'rs_line_signals', 'rs_frame_signals', 'rs_weekly_frame', 'rs_signals_view', 'rs_history_summary', 'rs_history_view')) or (
     isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in (
-        'RS_SIGNAL_COLUMNS', 'RS_WEEKLY_COLUMNS', 'RS_VIEW_COLUMNS') for t in node.targets))]
+        'RS_SIGNAL_COLUMNS', 'RS_WEEKLY_COLUMNS', 'RS_VIEW_COLUMNS', 'RS_HISTORY_COLUMNS', 'RS_HISTORY_CORE_COLUMNS') for t in node.targets))]
 ns = {'pd': pd, 'np': np}
 exec(compile(ast.Module(body=parts, type_ignores=[]), '<signals>', 'exec'), ns)
 frame = ns['rs_daily_frame']
@@ -321,6 +321,141 @@ class WeeklySignalTests(unittest.TestCase):
         view = ns['rs_signals_view'](pd.DataFrame([row]), {'TEST': result})
         self.assertEqual(view.iloc[0]['RS_Before_Price_Weekly'], '')
         self.assertEqual(view.iloc[0]['Weekly_Status'], 'MISSING_HIGH_WINDOW_DATA')
+
+
+class HistoricalSignalTests(unittest.TestCase):
+    def summarize(self, age, recent=20, unknown_last=False):
+        index = pd.bdate_range('2025-01-01', periods=400, tz='UTC')
+        stock = pd.DataFrame({'close':100., 'high':101.}, index=index)
+        events = pd.Series(False, index=index)
+        events.iloc[-1-age] = True
+        valid = pd.Series(True, index=index)
+        if unknown_last:
+            valid.iloc[-1] = False
+        return ns['rs_history_summary'](stock, events, valid, events, valid, 250, recent)
+
+    def test_daily_window_boundary_includes_19_bars_ago_not_20(self):
+        for age, expected in ((0,True),(19,True),(20,False),(40,False)):
+            result = self.summarize(age)
+            self.assertEqual(result['RS_History_New_High'], expected)
+            self.assertEqual(result['RS_History_Before_Price'], expected)
+            self.assertEqual(result['RS_Bars_Since_New_High'], age)
+            self.assertEqual(result['RS_History_Window_Bars'], 20)
+
+    def test_weekly_window_boundary_includes_7_bars_ago_not_8(self):
+        self.assertTrue(self.summarize(7, recent=8)['RS_History_New_High'])
+        self.assertFalse(self.summarize(8, recent=8)['RS_History_New_High'])
+
+    def test_observed_recent_event_survives_unknown_later_bar_but_age_is_unknown(self):
+        result = self.summarize(4, unknown_last=True)
+        self.assertTrue(result['RS_History_New_High'])
+        self.assertIsNone(result['RS_Last_New_High_Date'])
+        self.assertIsNone(result['RS_Bars_Since_New_High'])
+        self.assertIn('RS_WINDOW_HAS_GAPS', result['RS_History_Status'])
+
+    def test_no_observed_recent_event_and_a_gap_is_unknown_not_false(self):
+        result = self.summarize(30, unknown_last=True)
+        self.assertIsNone(result['RS_History_New_High'])
+        self.assertIsNone(result['RS_History_Before_Price'])
+
+    def test_current_false_but_historical_true(self):
+        stock = candles(400)
+        stock[-80]['high'] = 1500
+        stock[-20]['close'] = 1000
+        stock[-20]['high'] = 1100
+        result = signals(stock, frame(candles(400, slope=0)), '^GSPC')
+        self.assertFalse(result['RS_Blue_Dot'])
+        self.assertFalse(result['RS_Before_Price'])
+        self.assertTrue(result['Historical_RS_New_High_Daily'])
+        self.assertTrue(result['Historical_RS_Before_Price_Daily'])
+        self.assertEqual(result['Trading_Days_Since_RS_New_High'], 19)
+        self.assertEqual(result['Trading_Days_Since_RS_Before_Price'], 19)
+        self.assertEqual(result['Last_RS_New_High_Daily_Date'], stock[-20]['datetime'])
+
+    def test_last_before_price_date_is_independent_of_plain_rs_date(self):
+        stock = candles(400)
+        stock[-80]['high'] = 1500
+        stock[-1]['high'] = 2000
+        result = signals(stock, frame(candles(400, slope=0)), '^GSPC')
+        self.assertTrue(result['RS_Blue_Dot'])
+        self.assertFalse(result['RS_Before_Price'])
+        self.assertEqual(result['Trading_Days_Since_RS_New_High'], 0)
+        self.assertEqual(result['Trading_Days_Since_RS_Before_Price'], 1)
+        self.assertTrue(result['Historical_RS_Before_Price_Daily'])
+
+    def test_latest_date_mismatch_does_not_flag_stale_recent_history(self):
+        result = signals(candles(400)[:-1], frame(candles(400, slope=0)), '^GSPC')
+        self.assertIsNone(result['Historical_RS_New_High_Daily'])
+        self.assertEqual(result['Historical_Daily_Status'], 'LATEST_DATES_DIFFER')
+
+    def test_short_ipo_history_is_visible(self):
+        result = signals(candles(10), frame(candles(10, slope=0)), '^GSPC')
+        self.assertTrue(result['Historical_RS_New_High_Daily'])
+        self.assertEqual(result['Historical_Daily_Bars_Checked'], 10)
+        self.assertIn('SHORT_HISTORY', result['Historical_Daily_Status'])
+        self.assertIn('SHORT_HISTORY', result['Historical_Weekly_Status'])
+
+    def test_past_events_use_their_own_rolling_high_not_todays_high(self):
+        stock = candles(400)
+        # Last session sets a fresh high above an older RS high, but the older
+        # high must still remain an historical event in its own earlier window.
+        stock[-10]['close'] = 1000
+        stock[-10]['high'] = 1100
+        stock[-1]['close'] = 2000
+        stock[-1]['high'] = 2100
+        result = signals(stock, frame(candles(400, slope=0)), '^GSPC')
+        self.assertTrue(result['Historical_RS_New_High_Daily'])
+        # Drop today's bar: the earlier event is then the last historical high.
+        earlier = signals(stock[:-1], frame(candles(400, slope=0)[:-1]), '^GSPC')
+        self.assertTrue(earlier['Historical_RS_New_High_Daily'])
+        self.assertEqual(earlier['Last_RS_New_High_Daily_Date'], stock[-10]['datetime'])
+
+    def test_daily_and_weekly_histories_against_independent_reference(self):
+        rng = np.random.default_rng(122)
+        dates = pd.bdate_range('2025-01-01', periods=400)
+        prices = 100 * np.exp(np.cumsum(rng.normal(.001,.025,len(dates))))
+        benchmarks = 100 * np.exp(np.cumsum(rng.normal(.001,.01,len(dates))))
+        stock = [{'datetime':str(d.date()), 'close':float(p), 'high':float(p*1.04)}
+                 for d,p in zip(dates,prices)]
+        bench = [{'datetime':str(d.date()), 'close':float(p), 'high':float(p*1.01)}
+                 for d,p in zip(dates,benchmarks)]
+        result = signals(stock, frame(bench), '^GSPC')
+        daily = [(s['datetime'],s['close']/b['close'],s['high']) for s,b in zip(stock,bench)]
+        grouped = {}
+        for record in daily:
+            date = pd.Timestamp(record[0])
+            week = date - pd.Timedelta(days=date.weekday())
+            previous = grouped.get(week)
+            grouped[week] = (record[0], record[1], max(record[2],previous[2]) if previous else record[2])
+        for timeframe, records, lookback, recent, unit in (
+            ('Daily',daily,250,20,'Trading_Days'),
+            ('Weekly',list(grouped.values()),52,8,'Weekly_Bars')):
+            plain, before = [], []
+            for i, (_,line,high) in enumerate(records):
+                window = records[max(0,i-lookback+1):i+1]
+                at_high = line == max(r[1] for r in window)
+                plain.append(at_high)
+                before.append(at_high and high < max(r[2] for r in window))
+            for kind, flags in (('New_High',plain),('Before_Price',before)):
+                self.assertEqual(result[f'Historical_RS_{kind}_{timeframe}'], any(flags[-recent:]))
+                found = [i for i, value in enumerate(flags) if value]
+                if found:
+                    last = found[-1]
+                    self.assertEqual(result[f'Last_RS_{kind}_{timeframe}_Date'], records[last][0])
+                    self.assertEqual(result[f'{unit}_Since_RS_{kind}'],len(records)-1-last)
+
+    def test_history_sidecar_keeps_legacy_rs_view_at_24_columns(self):
+        stock = candles(400)
+        stock[-10]['high'] = 1000
+        result = signals(stock, frame(candles(400,slope=0)), '^GSPC')
+        stocks = pd.DataFrame([{'Rank':1,'Ticker':'NA'}])
+        legacy = ns['rs_signals_view'](stocks, {'NA':result})
+        history = ns['rs_history_view'](stocks, {'NA':result})
+        self.assertEqual(len(legacy.columns),24)
+        self.assertEqual(len(history.columns),18)
+        self.assertEqual(history.loc[0,'Ticker'],'NA')
+        self.assertEqual(history.loc[0,'Historical_RS_New_High_Daily'],'🔵')
+        self.assertEqual(history.loc[0,'History_As_Of'],stock[-1]['datetime'])
 
 
 if __name__ == '__main__':
