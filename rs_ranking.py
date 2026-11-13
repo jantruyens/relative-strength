@@ -103,6 +103,68 @@ def avg_volume(candles, days):
     except Exception:
         return None
 
+
+LIQUIDITY_COLUMNS = ["Ticker", "Liquidity_As_Of", "AvgDollarVolume50",
+                     "DollarVolume50_Bars_Used", "DollarVolume50_Status"]
+
+
+def dollar_volume_summary(candles, days=50):
+    """Mean of daily close * shares over a complete trailing window.
+
+    Uses the project's adjusted daily closes. This is a closing-price liquidity
+    estimate, not actual trade-by-trade dollar turnover. U.S.-listed universe
+    is assumed USD-quoted; no currency conversion is performed.
+    """
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise ValueError("days must be a positive integer")
+    result = {"Liquidity_As_Of": None, "AvgDollarVolume50": None,
+              "DollarVolume50_Bars_Used": 0, "DollarVolume50_Status": None}
+    # Do not accept boolean prices or share counts as numeric observations.
+    clean = [dict(c, close=None) if isinstance(c.get("close"), (bool, np.bool_))
+             else c for c in candles]
+    try:
+        daily = rs_daily_frame(clean)
+    except ValueError as exc:
+        result["DollarVolume50_Status"] = str(exc)
+        return result
+    result["Liquidity_As_Of"] = daily.index[-1].strftime("%Y-%m-%d")
+    window = daily.tail(days)
+    if "volume" in window:
+        raw_volume = window["volume"]
+        volumes = pd.to_numeric(raw_volume, errors="coerce")
+        volumes = volumes.where(~raw_volume.map(lambda x: isinstance(x, (bool, np.bool_))))
+    else:
+        volumes = pd.Series(float("nan"), index=window.index)
+    valid = window["close"].notna() & np.isfinite(volumes) & volumes.ge(0)
+    result["DollarVolume50_Bars_Used"] = int(valid.sum())
+    issues = []
+    if len(window) < days:
+        issues.append("SHORT_HISTORY")
+    if not bool(valid.all()):
+        issues.append("MISSING_OR_INVALID_WINDOW_DATA")
+    products = window["close"] * volumes
+    if bool(valid.all()) and not bool(np.isfinite(products).all()):
+        issues.append("NONFINITE_DOLLAR_VOLUME")
+    if issues:
+        result["DollarVolume50_Status"] = ";".join(issues)
+        return result
+    average = float(products.mean())
+    if not np.isfinite(average):
+        result["DollarVolume50_Status"] = "NONFINITE_DOLLAR_VOLUME"
+        return result
+    result["AvgDollarVolume50"] = round(average, 2)
+    result["DollarVolume50_Status"] = "OK"
+    return result
+
+
+def rs_liquidity_view(stocks, price_data):
+    records = []
+    for ticker in stocks["Ticker"]:
+        summary = dollar_volume_summary(price_data.get(ticker, {}).get("candles", []))
+        records.append({"Ticker": ticker, **summary})
+    return pd.DataFrame(records, columns=LIQUIDITY_COLUMNS)
+
+
 def safe_info(ticker, field):
     """Safely retrieve a field from the ticker_info cache."""
     try:
@@ -609,6 +671,11 @@ def rankings():
 
     print(f"✓ rs_stocks_1.csv: {len(df_top)} tickers (Percentile 50-99)")
     print(f"✓ rs_stocks_2.csv: {len(df_bot)} tickers (Percentile 0-49)")
+    # Separate liquidity snapshot leaves all original CSV schemas unchanged.
+    rs_liquidity_view(df, price_data).to_csv(
+        os.path.join(DIR, "output", "rs_liquidity.csv"), index=False, encoding="utf-8"
+    )
+
     dfs.append(df)
 
     # ── Industries DataFrame ──────────────────────────────────────────────────
