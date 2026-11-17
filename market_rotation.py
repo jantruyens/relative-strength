@@ -11,6 +11,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 BENCHMARK = 'SPY'
+SECTOR_DOWNLOAD_YEARS = 3
 SECTORS = {
     'XLC': 'Communication Services', 'XLY': 'Consumer Discretionary',
     'XLP': 'Consumer Staples', 'XLE': 'Energy', 'XLF': 'Financials',
@@ -117,6 +118,55 @@ def extract_candles(download, symbols):
     return output
 
 
+def qualify_sector_signals(snapshot):
+    """Require full lookbacks for ETF signals, preserving the stock IPO policy.
+
+    The shared stock helpers allow partial initial windows and label them.
+    A sector comparison must not present those as 250-day/52-week events.
+    An old qualified event remains valid; blank dates never mean "never".
+    """
+    result = dict(snapshot)
+    for timeframe, current_status, current_high, current_before in (
+        ('Daily', 'RS_Signal_Status', 'RS_Blue_Dot', 'RS_Before_Price'),
+        ('Weekly', 'RS_Weekly_Signal_Status', 'RS_New_High_Weekly',
+         'RS_Before_Price_Weekly'),
+    ):
+        history_key = f'Historical_{timeframe}_Status'
+        issues = [part for part in (result.get(history_key) or '').split(';')
+                  if part and part != 'OK']
+        short_recent = 'RECENT_WINDOW_SHORT_HISTORY' in issues
+        short_current = result.get(current_status) == 'SHORT_HISTORY'
+        if short_current:
+            result[current_high] = None
+            result[current_before] = None
+        for prefix, kind, age_key in (
+            ('RS', 'New_High', 'Trading_Days_Since_RS_New_High'
+             if timeframe == 'Daily' else 'Weekly_Bars_Since_RS_New_High'),
+            ('BEFORE_PRICE', 'Before_Price', 'Trading_Days_Since_RS_Before_Price'
+             if timeframe == 'Daily' else 'Weekly_Bars_Since_RS_Before_Price'),
+        ):
+            date_key = f'Last_RS_{kind}_{timeframe}_Date'
+            flag_key = f'Historical_RS_{kind}_{timeframe}'
+            warning = prefix + '_LAST_EVENT_SHORT_LOOKBACK'
+            if warning in issues:
+                result[date_key] = None
+                result[age_key] = None
+                # The old date was the latest observed event, so no later
+                # full-window event was found. Preserve unknown gap flags.
+                if result.get(flag_key) is True:
+                    result[flag_key] = None if short_recent else False
+                issues.remove(warning)
+                issues.append(prefix + '_NO_FULL_LOOKBACK_EVENT_FOUND')
+            # If a recent window includes unqualified bars, only an observed
+            # full-window event can establish a positive historical flag.
+            if short_recent and not (
+                result.get(flag_key) is True and result.get(date_key)
+            ):
+                result[flag_key] = None
+        result[history_key] = ';'.join(issues) if issues else 'OK'
+    return result
+
+
 def build_sector_table(prices, frame_function, signal_function, generated):
     benchmark = frame_function(prices.get(BENCHMARK, []))
     if benchmark.empty or pd.isna(benchmark['close'].iloc[-1]):
@@ -124,7 +174,8 @@ def build_sector_table(prices, frame_function, signal_function, generated):
     records = []
     for symbol, sector in SECTORS.items():
         candles = prices.get(symbol, [])
-        snapshot = signal_function(candles, benchmark, BENCHMARK)
+        snapshot = qualify_sector_signals(
+            signal_function(candles, benchmark, BENCHMARK))
         row = dict.fromkeys(SECTOR_COLUMNS)
         row.update(ETF=symbol, Sector=sector, Benchmark=BENCHMARK,
                    Benchmark_As_Of=str(benchmark.index[-1].date()), Generated_UTC=generated)
@@ -228,7 +279,7 @@ def main():
     as_of = pd.Timestamp(groups.Stocks_As_Of.iloc[0])
     symbols = [*SECTORS, BENCHMARK]
     download = yf.download(tickers=symbols,
-                           start=(as_of-pd.DateOffset(years=2)).date(),
+                           start=(as_of-pd.DateOffset(years=SECTOR_DOWNLOAD_YEARS)).date(),
                            end=(as_of+pd.Timedelta(days=1)).date(),
                            auto_adjust=True, keepna=True, progress=False,
                            threads=True, group_by='column', ignore_tz=True)
