@@ -158,6 +158,80 @@ class DownloadParsingTests(unittest.TestCase):
         self.assertEqual(rotation.extract_candles(pd.DataFrame(),['SPY','XLK']),{'SPY':[],'XLK':[]})
 
 
+class FullSectorLookbackTests(unittest.TestCase):
+    def test_initial_partial_daily_and_weekly_events_are_not_published(self):
+        prices=sector_prices()
+        rows=prices['XLY']
+        for i,row in enumerate(rows):
+            row['close']=100+5*i if i<=20 else 200-.1*(i-20)
+            row['high']=1000 if i==0 else row['close']+2
+        benchmark=ns['rs_daily_frame'](prices['SPY'])
+        original=ns['rs_line_signals'](rows,benchmark,'SPY')
+        self.assertIn('RS_LAST_EVENT_SHORT_LOOKBACK',original['Historical_Daily_Status'])
+        self.assertIn('BEFORE_PRICE_LAST_EVENT_SHORT_LOOKBACK',original['Historical_Daily_Status'])
+        self.assertIn('RS_LAST_EVENT_SHORT_LOOKBACK',original['Historical_Weekly_Status'])
+        out=sectors(prices).set_index('ETF').loc['XLY']
+        for column in ('Last_Daily_RS_New_High_Date','Last_Daily_RS_Before_Price_Date',
+                       'Last_Weekly_RS_New_High_Date','Last_Weekly_RS_Before_Price_Date',
+                       'Daily_Bars_Since_Before_Price','Weekly_Bars_Since_Before_Price'):
+            self.assertTrue(pd.isna(out[column]),column)
+        self.assertIn('RS_NO_FULL_LOOKBACK_EVENT_FOUND',out.Historical_Daily_Status)
+        self.assertIn('BEFORE_PRICE_NO_FULL_LOOKBACK_EVENT_FOUND',out.Historical_Weekly_Status)
+        self.assertEqual(out.Historical_Daily_RS_New_High,'')
+        self.assertEqual(out.Data_As_Of,rows[-1]['datetime'])
+        self.assertTrue(pd.notna(out.RS_1M_Pct))
+        # The original snapshot and shared stock helper retain their IPO policy.
+        self.assertIsNotNone(original['Last_RS_New_High_Daily_Date'])
+
+    def test_old_fully_qualified_event_is_retained(self):
+        prices=sector_prices()
+        for i,row in enumerate(prices['XLY']):
+            close=(200-.2*i if i<250 else
+                   151+4*(i-250) if i<=270 else 231-.2*(i-270))
+            row.update(close=close,high=1000 if i==260 else close+2)
+        row=sectors(prices).set_index('ETF').loc['XLY']
+        self.assertEqual(row.Last_Daily_RS_New_High_Date,prices['XLY'][270]['datetime'])
+        self.assertEqual(row.Last_Daily_RS_Before_Price_Date,prices['XLY'][270]['datetime'])
+        self.assertEqual(row.Daily_Bars_Since_Before_Price,129)
+        self.assertEqual(row.Historical_Daily_RS_New_High,'')
+        self.assertEqual(row.Daily_Status,'OK')
+
+    def test_current_short_daily_and_weekly_signals_are_unavailable(self):
+        prices={'SPY':candles(n=20,slope=0),
+                **{s:candles(n=20,slope=1) for s in rotation.SECTORS}}
+        out=sectors(prices)
+        self.assertTrue(out.Daily_Status.eq('SHORT_HISTORY').all())
+        self.assertTrue(out.Weekly_Status.eq('SHORT_HISTORY').all())
+        for column in rotation.SECTOR_COLUMNS[9:17]:
+            self.assertTrue(out[column].eq('').all(),column)
+
+    def test_a_full_daily_event_inside_a_short_recent_window_is_kept(self):
+        prices={'SPY':candles(n=255,slope=0),
+                **{s:candles(n=255,slope=1) for s in rotation.SECTORS}}
+        out=sectors(prices)
+        self.assertTrue(out.Historical_Daily_RS_New_High.eq('\U0001f535').all())
+        self.assertTrue(out.Last_Daily_RS_New_High_Date.eq(prices['SPY'][-1]['datetime']).all())
+        # This calendar starts midweek: 255 sessions span 52 weekly bars.
+        self.assertTrue(out.Weekly_Status.eq('OK').all())
+        self.assertTrue(out.Weekly_RS_New_High.eq('\U0001f535').all())
+
+    def test_no_partial_event_is_misreported_as_a_known_negative_recent_window(self):
+        prices={'SPY':candles(n=255,slope=0),
+                **{s:candles(n=255,slope=-.1) for s in rotation.SECTORS}}
+        snapshot=ns['rs_line_signals'](prices['XLY'],ns['rs_daily_frame'](prices['SPY']),'SPY')
+        fixed=rotation.qualify_sector_signals(snapshot)
+        self.assertIsNone(fixed['Historical_RS_New_High_Daily'])
+        self.assertIsNone(fixed['Last_RS_New_High_Daily_Date'])
+
+    def test_missing_later_observations_keep_the_uncertain_event_warning(self):
+        prices=sector_prices()
+        prices['XLY'][-10]['close']=None
+        row=sectors(prices).set_index('ETF').loc['XLY']
+        self.assertIn('RS_LAST_EVENT_UNCERTAIN',row.Historical_Daily_Status)
+        self.assertTrue(pd.isna(row.Last_Daily_RS_New_High_Date))
+        self.assertEqual(row.Daily_Status,'MISSING_RS_WINDOW_DATA')
+
+
 class IndustryRotationTests(unittest.TestCase):
     def test_member_breadth_not_industry_index_blue_dot(self):
         ind,stocks=industry_inputs()
@@ -264,6 +338,7 @@ class PublishingIntegrationTests(unittest.TestCase):
                 self.assertEqual(industry_out.loc[0,'Member_Tickers'].split(',')[0],'NA')
                 self.assertEqual(sectors_out.Benchmark_As_Of.iloc[0],latest)
                 self.assertEqual(calls[0]['end'],(pd.Timestamp(latest)+pd.Timedelta(days=1)).date())
+                self.assertEqual(calls[0]['start'],(pd.Timestamp(latest)-pd.DateOffset(years=3)).date())
             self.assertEqual((root/'output/rs_signals.csv').read_bytes(),before)
 
     def test_real_cli_writes_both_tables_without_changing_stock_inputs(self):self.exercise()
