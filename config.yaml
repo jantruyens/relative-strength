@@ -27,3 +27,12 @@ SP600: true
 # Program behavior
 # Should the program wait for you to hit enter to exit?
 EXIT_WAIT_FOR_ENTER: true
+
+# Gapper scan (gappers.py -> output/gappers.csv), Oliver Kell's criteria.
+# Gap = session open vs previous close, in percent. RVOL = gap-day volume vs
+# the prior 50-day average. Price and volume are checked on the gap day.
+GAP_MIN_PCT: 3
+GAP_MIN_RVOL: 3
+GAP_MIN_PRICE: 20
+GAP_MIN_VOLUME: 500000
+GAP_LOOKBACK_DAYS: 10
