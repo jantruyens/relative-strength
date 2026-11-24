@@ -87,7 +87,7 @@ class GapperScanTests(unittest.TestCase):
         last = rows[-2]["close"]
         gap_day(rows, -1, last * 1.08, last * 1.12, last * 1.07, last * 1.11, 5_000_000)
         hit = gappers.scan_ticker(rows)
-        self.assertLess(hit["Pre_Gap_ATR_Ext"], -1)
+        self.assertLess(hit["Pre_Gap_ATR_Ext"], -2)
         self.assertEqual(hit["Gap_Type"], "Bounce")
 
     def test_outside_lookback_and_short_history(self):
