@@ -10,9 +10,10 @@ Finviz's Gap filter). Long-only: gap downs are ignored.
 
 Gap type is judged from where the stock stood BEFORE the gap, in ATR units
 above its 50-day average (the sheet's "ATR x from 50-day"):
-  Breakaway        <= 2x  gapped out of a base / from near the 50-day
-  Continuation     2-4x   gapped inside an existing uptrend
-  Exhaustion risk  > 4x   gapped when already stretched
+  Bounce           < -1x      gapped up from well below the 50-day (downtrend rally)
+  Breakaway        -1x to 2x  gapped out of a base / from near the 50-day
+  Continuation     2-4x       gapped inside an existing uptrend
+  Exhaustion risk  > 4x       gapped when already stretched
 """
 
 import json
@@ -80,6 +81,8 @@ def gap_type(ext):
         return "Unknown"
     if ext > 4:
         return "Exhaustion risk"
+    if ext < -1:
+        return "Bounce"
     if ext <= 2:
         return "Breakaway"
     return "Continuation"

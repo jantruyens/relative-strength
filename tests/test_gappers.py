@@ -79,6 +79,17 @@ class GapperScanTests(unittest.TestCase):
         self.assertEqual(hit["Gap_Type"], "Exhaustion risk")
         self.assertGreater(hit["Pre_Gap_ATR_Ext"], 4)
 
+    def test_gap_from_far_below_50_day_is_a_bounce(self):
+        rows = base()
+        for k, row in enumerate(rows[-30:-1]):  # steady slide well below the 50-day
+            p = 50 - 0.8 * (k + 1)
+            row.update(open=p + 0.3, high=p + 0.5, low=p - 0.5, close=p)
+        last = rows[-2]["close"]
+        gap_day(rows, -1, last * 1.08, last * 1.12, last * 1.07, last * 1.11, 5_000_000)
+        hit = gappers.scan_ticker(rows)
+        self.assertLess(hit["Pre_Gap_ATR_Ext"], -1)
+        self.assertEqual(hit["Gap_Type"], "Bounce")
+
     def test_outside_lookback_and_short_history(self):
         rows = gap_day(base(), -15, 54, 56, 53.8, 55.8, 5_000_000)
         self.assertIsNone(gappers.scan_ticker(rows))
