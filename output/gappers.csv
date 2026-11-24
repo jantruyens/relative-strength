@@ -1,0 +1,26 @@
+Ticker,Gap_Date,Sessions_Ago,Gap_Pct,RVOL,Gap_Day_Volume,Gap_Day_Change_Pct,Close_In_Range,Close_Quality,Held_Gap_Intraday,Pre_Gap_ATR_Ext,Gap_Type,Pre_Gap_Pct_From_52W_High,Pre_Gap_Above_200,Pre_Gap_200_Rising,Gap_Fill_Level,Gap_Filled,Price,Pct_Since_Gap_Close,ATR_Ext_Now,Gaps_In_Window,Sector,Industry,RS_Rating,MarketCap,AvgDollarVol50_M,As_Of
+EROK,2026-11-23,0,12.79,16.04,4178100,7.72,0.22,Faded,True,-0.77,Breakaway,-28.15,,,19.7,False,21.22,0.0,0.37,1,Energy,Oil & Gas Equipment & Services,48,521307041.1167202,7.0,2026-11-23
+KYMR,2026-11-23,0,19.68,8.61,7867900,30.4,0.56,OK,True,-0.31,Breakaway,-19.32,True,True,115.31,False,150.37,0.0,3.23,1,Healthcare,Biotechnology,97,11245973762.064041,131.0,2026-11-23
+ZS,2026-11-23,0,22.17,6.77,19230300,17.67,0.36,Faded,True,-1.42,Breakaway,-34.73,True,True,194.82,False,229.24,0.0,1.03,1,Technology,Software - Infrastructure,94,32229392203.80414,661.1,2026-11-23
+NVDA,2026-11-23,0,33.07,4.37,779184200,31.48,0.56,Faded,True,-6.34,Breakaway,-48.42,False,False,125.53,False,165.05,0.0,-2.63,1,Technology,Semiconductors,37,4506796065261.841,35500.3,2026-11-23
+TPL,2026-11-23,0,4.82,4.34,1742300,-3.5,0.22,Faded,False,-3.37,Breakaway,-50.92,False,False,267.44,True,258.07,0.0,-3.47,1,Energy,Oil & Gas E&P,26,18785943651.508667,136.2,2026-11-23
+GAP,2026-11-20,1,7.77,4.5,28018800,11.44,0.42,OK,True,-3.26,Breakaway,-34.47,False,False,18.79,False,21.75,3.87,-0.21,1,Consumer Cyclical,Apparel Retail,51,7545282381.961292,147.2,2026-11-23
+GLOB,2026-11-20,1,8.67,3.98,3946700,4.13,0.43,Faded,False,-0.26,Breakaway,-44.55,False,False,39.98,False,45.57,9.46,1.9,1,Technology,Information Technology Services,75,2047142743.3713226,43.6,2026-11-23
+PDD,2026-11-19,2,6.55,4.0,23414100,11.04,0.74,OK,True,-0.7,Breakaway,-38.22,False,False,77.45,False,87.14,1.33,2.35,1,Consumer Cyclical,Internet Retail,47,118184606502.31549,520.3,2026-11-23
+WWD,2026-11-19,2,3.69,3.11,2314900,5.32,0.36,Faded,True,-0.3,Breakaway,-29.18,False,False,318.75,False,349.11,3.99,1.44,1,Industrials,Aerospace & Defense,74,18735829000.045166,260.8,2026-11-23
+PANW,2026-11-19,2,4.67,3.07,19184200,6.42,0.58,OK,True,-1.33,Breakaway,-21.37,True,True,339.92,False,353.43,-2.29,-0.63,1,Technology,Software - Infrastructure,97,256860183272.8518,2414.2,2026-11-23
+TTWO,2026-11-18,3,4.27,4.08,12135700,6.22,0.5,OK,True,-0.31,Breakaway,-23.32,False,False,203.93,False,209.36,-3.35,0.15,2,Communication Services,Electronic Gaming & Multimedia,49,40176486874.419556,745.5,2026-11-23
+BLSH,2026-11-18,3,10.09,3.75,5194500,5.66,0.31,Faded,True,-5.78,Breakaway,-60.62,False,False,19.27,True,21.03,3.29,-4.21,1,Technology,Software - Infrastructure,22,3231626172.2710457,42.1,2026-11-23
+ENR,2026-11-17,4,8.73,3.52,3353200,12.57,0.87,Strong close,True,2.12,Continuation,-5.77,True,True,24.34,False,28.97,5.73,4.3,1,Industrials,Electrical Equipment & Parts,96,1632649916.5297737,25.4,2026-11-23
+CGON,2026-11-16,5,23.66,9.13,9881900,13.95,0.42,Faded,True,1.27,Breakaway,-8.11,True,True,74.4,False,83.51,-1.5,2.05,1,Healthcare,Biotechnology,95,6735781906.89373,104.3,2026-11-23
+LFTO,2026-11-13,6,27.1,11.75,9559800,30.63,0.93,Strong close,True,1.66,Breakaway,-37.84,,,18.71,False,22.77,-6.83,2.84,1,Communication Services,Advertising Agencies,57,3069980442.401327,21.7,2026-11-23
+MOD,2026-11-13,6,33.84,4.91,8426000,27.86,0.28,Faded,True,-5.22,Breakaway,-67.18,False,False,106.1,False,137.39,1.28,-1.09,1,Industrials,Building Products & Equipment,28,5139354280.448822,289.3,2026-11-23
+CBRS,2026-11-13,6,11.2,3.96,36873100,11.22,0.39,Faded,True,-5.36,Breakaway,-74.7,,,97.75,True,98.51,-9.39,-3.42,1,Technology,Semiconductors,12,21304743269.37879,1413.6,2026-11-23
+TRMK,2026-11-12,7,5.44,10.05,4219400,5.0,0.41,Faded,True,-0.02,Breakaway,-6.51,True,True,45.56,True,44.31,-7.38,-0.78,1,Financial Services,Banks - Regional,71,2577292239.641327,26.9,2026-11-23
+REZI,2026-11-11,8,6.22,3.96,7492300,18.25,1.0,Strong close,True,1.29,Breakaway,-34.93,False,False,19.45,False,21.77,-5.35,2.11,1,Industrials,Industrial Distribution,63,2945839075.274822,36.6,2026-11-23
+CRWV,2026-11-11,8,14.85,3.58,165134500,24.71,0.85,Strong close,True,-4.69,Breakaway,-64.75,False,False,48.73,True,48.33,-20.47,-2.7,1,Technology,Software - Infrastructure,18,25591299174.378067,3544.1,2026-11-23
+ENS,2026-11-11,8,3.28,3.01,1670800,-2.43,0.02,Faded,False,-2.83,Breakaway,-37.88,False,True,151.33,True,132.39,-10.34,-4.05,1,Industrials,Electrical Equipment & Parts,30,5302309386.567261,100.5,2026-11-23
+SANM,2026-11-10,9,11.2,4.72,3436700,3.87,0.29,Faded,True,-3.51,Breakaway,-48.16,False,True,149.64,True,153.88,-1.0,-1.94,1,Technology,Electronic Components,37,7218491513.52124,152.5,2026-11-23
+CTEV,2026-11-10,9,3.63,4.69,933100,19.46,0.93,Strong close,False,-1.5,Breakaway,-67.43,False,False,24.0,True,18.64,-34.98,-1.76,1,Healthcare,Health Information Services,27,384876869.2141342,5.8,2026-11-23
+AAON,2026-11-10,9,13.95,4.19,5023400,19.31,0.58,OK,True,-2.58,Breakaway,-58.13,False,False,62.87,False,80.16,6.87,0.46,1,Industrials,Building Products & Equipment,40,4715523501.177158,97.8,2026-11-23
+HROW,2026-11-10,9,20.39,3.6,2152600,10.52,0.3,Faded,True,-2.97,Breakaway,-49.92,False,False,27.47,False,30.57,0.69,0.24,1,Healthcare,Drug Manufacturers - Specialty & Generic,32,1008048263.6192322,20.2,2026-11-23
