@@ -77,6 +77,39 @@ Once imported, use standard Google Sheets filters or `QUERY()` to slice by:
 
 ---
 
+## Pullback Setups (`output/setups.csv`)
+
+`setups.py` scans stocks with RS rating ≥ `SETUP_MIN_RS` for "weakness after strength":
+a cluster of daily RS blue dots, then a pullback without new dots back to support.
+
+| Condition | Default |
+|-----------|---------|
+| Strength: blue dots in the last 40 sessions | ≥ 3 |
+| Weakness: sessions since the latest dot | 5 to 20 |
+| Support: close within this % of the 21-day EMA or 8-week EMA | 3% |
+| Trend: 8-week EMA rising, close above 50-day SMA | required |
+
+Rows that meet all four have `Setup = Pullback` and come first. Other columns help judge the
+pullback: `Inside_Day`, `Vol_5D_vs_50D` (volume dry-up below 1), `Weekly_RS_Before_Price`,
+and `HV1_*` (the highest-volume day of the last year and the distance to its high).
+Thresholds live in `config.yaml`. The blue dot is the same calculation as in `rs_signals.csv`
+(checked by `tests/test_setups.py`).
+
+## Industry Leader Breadth (`output/industry_rotation.csv`)
+
+The industry RS percentile averages all members, so a large group full of laggards can hide a
+cluster of leaders. Extra columns count them instead:
+
+| Column | Meaning |
+|--------|---------|
+| Leader_Count / Leader_Tickers | Members with RS ≥ 90 and a daily blue dot in the last 20 sessions |
+| RS90_Member_Count | Members with RS ≥ 90 |
+| Dot_20D_Member_Count / Dot_20D_Pct | Members with a blue dot in the last 20 sessions |
+| Before_Price_20D_Member_Count | Members with an RS-before-price dot in the last 20 sessions |
+| Breadth_Rank | Rank by Leader_Count, then Dot_20D_Pct |
+
+---
+
 ## Calculation
 
 ```

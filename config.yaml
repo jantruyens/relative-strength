@@ -36,3 +36,15 @@ GAP_MIN_RVOL: 3
 GAP_MIN_PRICE: 20
 GAP_MIN_VOLUME: 500000
 GAP_LOOKBACK_DAYS: 10
+
+# Pullback scan (setups.py -> output/setups.csv): "weakness after strength".
+# Strength = at least SETUP_MIN_DOTS daily RS blue dots in the last
+# SETUP_DOT_WINDOW sessions. Weakness = latest dot SETUP_MIN_DAYS_SINCE_DOT to
+# SETUP_MAX_DAYS_SINCE_DOT sessions old. Support = close within SETUP_NEAR_PCT %
+# of the 21-day EMA or 8-week EMA. Trend = rising 8-week EMA, close > 50-day SMA.
+SETUP_MIN_RS: 80
+SETUP_DOT_WINDOW: 40
+SETUP_MIN_DOTS: 3
+SETUP_MIN_DAYS_SINCE_DOT: 5
+SETUP_MAX_DAYS_SINCE_DOT: 20
+SETUP_NEAR_PCT: 3

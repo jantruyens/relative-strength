@@ -34,6 +34,8 @@ jobs:
         run: python relative-strength.py true
       - name: Scan for gap-ups (Kell gapper criteria)
         run: python gappers.py
+      - name: Scan RS leaders for pullback setups (weakness after strength)
+        run: python setups.py
       - name: Check CSV before publishing
         run: |
           python - <<'PY'

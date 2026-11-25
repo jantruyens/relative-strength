@@ -232,6 +232,48 @@ class FullSectorLookbackTests(unittest.TestCase):
         self.assertEqual(row.Daily_Status,'MISSING_RS_WINDOW_DATA')
 
 
+class LeaderBreadthTests(unittest.TestCase):
+    def inputs(self):
+        ind,stocks=industry_inputs()
+        stocks['Percentile']=[95,92,40,20]
+        stocks['Days_Since_Dot']=[3,25,1,None]
+        stocks['Trading_Days_Since_RS_Before_Price']=[3,None,None,None]
+        return ind,stocks
+
+    def test_leaders_need_rs90_and_recent_dot(self):
+        ind,stocks=self.inputs()
+        row=rotation.build_industry_table(ind,stocks,'TEST').iloc[0]
+        self.assertEqual(row['Leader_Count'],1)
+        self.assertEqual(row['Leader_Tickers'],'NA')
+        self.assertEqual(row['RS90_Member_Count'],2)
+        self.assertEqual(row['Dot_20D_Member_Count'],2)
+        self.assertEqual(row['Dot_20D_Pct'],50)
+        self.assertEqual(row['Before_Price_20D_Member_Count'],1)
+
+    def test_stale_members_do_not_count_as_recent_dots(self):
+        ind,stocks=self.inputs()
+        stocks.loc[0,'Daily_Signal_Date']='2026-11-12'
+        row=rotation.build_industry_table(ind,stocks,'TEST').iloc[0]
+        self.assertEqual(row['Leader_Count'],0)
+        self.assertEqual(row['Leader_Tickers'],'')
+
+    def test_breadth_rank_prefers_leader_count_over_average(self):
+        ind,stocks=self.inputs()
+        ind2=pd.concat([ind,ind.assign(Rank=2,Industry='Biotech',Percentile=20)],ignore_index=True)
+        bio=stocks.assign(Ticker=['BA','BB','BC','BD'],Industry='Biotech',
+                          Percentile=[99,98,97,5],Days_Since_Dot=[1,2,4,None])
+        table=rotation.build_industry_table(ind2,pd.concat([stocks,bio],ignore_index=True),'TEST')
+        ranks=dict(zip(table['Industry'],table['Breadth_Rank']))
+        self.assertEqual(ranks,{'Biotech':1,'Software':2})
+        self.assertEqual(table.set_index('Industry').loc['Biotech','Leader_Tickers'],'BA,BB,BC')
+
+    def test_missing_signal_columns_give_zero_not_crash(self):
+        ind,stocks=industry_inputs()
+        row=rotation.build_industry_table(ind,stocks,'TEST').iloc[0]
+        self.assertEqual(row['Leader_Count'],0)
+        self.assertIsNone(row['Before_Price_20D_Member_Count'])
+
+
 class IndustryRotationTests(unittest.TestCase):
     def test_member_breadth_not_industry_index_blue_dot(self):
         ind,stocks=industry_inputs()
@@ -334,7 +376,7 @@ class PublishingIntegrationTests(unittest.TestCase):
                 sectors_out=pd.read_csv(root/'output/sector_rotation.csv',keep_default_na=False)
                 industry_out=pd.read_csv(root/'output/industry_rotation.csv',keep_default_na=False)
                 self.assertEqual(sectors_out.shape,(11,30))
-                self.assertEqual(industry_out.shape,(1,24))
+                self.assertEqual(industry_out.shape,(1,len(rotation.INDUSTRY_COLUMNS)))
                 self.assertEqual(industry_out.loc[0,'Member_Tickers'].split(',')[0],'NA')
                 self.assertEqual(sectors_out.Benchmark_As_Of.iloc[0],latest)
                 self.assertEqual(calls[0]['end'],(pd.Timestamp(latest)+pd.Timedelta(days=1)).date())

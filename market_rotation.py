@@ -47,7 +47,13 @@ INDUSTRY_COLUMNS = [
     'Weekly_RS_New_High_Pct', 'Weekly_RS_Before_Price_Pct', 'Stocks_As_Of',
     'Older_Or_Missing_Date_Members', 'Member_Tickers', 'Generated_UTC',
     'Classification', 'Group_Status',
+    # Leader breadth: a big industry full of laggards can hide a cluster of
+    # leaders behind a low average RS. Counts, not only averages.
+    'Breadth_Rank', 'Leader_Count', 'RS90_Member_Count', 'Dot_20D_Member_Count',
+    'Dot_20D_Pct', 'Before_Price_20D_Member_Count', 'Leader_Tickers',
 ]
+LEADER_MIN_RS = 90      # RS rating for a "leader"
+RECENT_DOT_BARS = 20    # a dot in the last 20 sessions counts as recent
 SIGNAL_MAP = {
     'Daily_RS_New_High': 'RS_Blue_Dot', 'Daily_RS_Before_Price': 'RS_Before_Price',
     'Weekly_RS_New_High': 'RS_New_High_Weekly',
@@ -263,8 +269,40 @@ def build_industry_table(industries, stocks, generated):
                 column = f'RS_{kind}_{timeframe}'
                 row[f'{prefix}_RS_{kind}_Pct'] = (round(100*eligible[column].eq('🔵').mean(), 2)
                                                 if len(eligible) else None)
+        row.update(leader_breadth(members, as_of))
         records.append(row)
-    return pd.DataFrame(records, columns=INDUSTRY_COLUMNS)
+    result = pd.DataFrame(records, columns=INDUSTRY_COLUMNS)
+    order = result.sort_values(['Leader_Count', 'Dot_20D_Pct', 'Rank'],
+                               ascending=[False, False, True], na_position='last').index
+    result.loc[order, 'Breadth_Rank'] = range(1, len(result) + 1)
+    result['Breadth_Rank'] = result['Breadth_Rank'].astype('Int64')
+    return result
+
+
+def leader_breadth(members, as_of):
+    """Leaders = RS >= LEADER_MIN_RS with a daily blue dot in the last
+    RECENT_DOT_BARS sessions. Days-since values only count for members
+    observed on the industry's snapshot date."""
+    current = members['_daily_date'].eq(as_of) & members['Daily_Status'].eq('OK')
+    pct = pd.to_numeric(members['Percentile'], errors='coerce')
+    def recent(column):
+        if column not in members:
+            return pd.Series(False, index=members.index)
+        days = pd.to_numeric(members[column], errors='coerce')
+        return current & days.lt(RECENT_DOT_BARS)
+    dot = recent('Days_Since_Dot')
+    before = recent('Trading_Days_Since_RS_Before_Price')
+    leaders = members.assign(_pct=pct).loc[pct.ge(LEADER_MIN_RS) & dot]
+    leaders = leaders.sort_values('_pct', ascending=False)
+    return {
+        'Leader_Count': len(leaders),
+        'RS90_Member_Count': int(pct.ge(LEADER_MIN_RS).sum()),
+        'Dot_20D_Member_Count': int(dot.sum()),
+        'Dot_20D_Pct': round(100*dot.sum()/current.sum(), 2) if current.sum() else None,
+        'Before_Price_20D_Member_Count': (int(before.sum()) if
+            'Trading_Days_Since_RS_Before_Price' in members else None),
+        'Leader_Tickers': ','.join(leaders['Ticker'].astype(str)),
+    }
 
 
 def main():
@@ -274,6 +312,12 @@ def main():
     generated = datetime.now(timezone.utc).isoformat(timespec='seconds')
     output = ROOT/'output'
     stocks = pd.read_csv(output/'rs_signals.csv', keep_default_na=False, na_values=[''])
+    history = output/'rs_signals_history.csv'
+    if history.exists():
+        recent = pd.read_csv(history, keep_default_na=False, na_values=[''])
+        column = 'Trading_Days_Since_RS_Before_Price'
+        if {'Ticker', column}.issubset(recent.columns) and not recent['Ticker'].duplicated().any():
+            stocks = stocks.merge(recent[['Ticker', column]], on='Ticker', how='left')
     industries = pd.read_csv(output/'rs_industries.csv', keep_default_na=False, na_values=[''])
     groups = build_industry_table(industries, stocks, generated)
     as_of = pd.Timestamp(groups.Stocks_As_Of.iloc[0])
